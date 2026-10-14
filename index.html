@@ -433,6 +433,23 @@ function renderForm(){
   const dom = trip.region==="domestic";
   const qph = dom ? "카카오맵 검색어 (예: 해운대 암소갈비집)" : "구글맵 검색어 (예: Kau Kee Restaurant Gough Street)";
   let o = "";
+  if(!window.claude){
+    const pm=plan.mode==="mine";
+    o += `<fieldset class="ai" id="planbox"><legend>AI에게 여행 계획 부탁하기</legend>
+    <div class="radios" role="radiogroup" aria-label="계획 방식">
+      <label><input type="radio" name="pmode" id="pm-auto" value="auto" ${pm?"":"checked"}>알아서 짜 줘</label>
+      <label><input type="radio" name="pmode" id="pm-mine" value="mine" ${pm?"checked":""}>내가 고른 장소로 동선 짜 줘</label></div>
+    <label class="f"><span>여행지</span><input id="p-dest" value="${esc(plan.dest)}" placeholder="예: 부산, 오사카, 다낭"></label>
+    <div class="g2"><label class="f"><span>출발일</span><input id="p-start" type="date" value="${esc(plan.start||trip.start)}"></label><label class="f"><span>돌아오는 날</span><input id="p-end" type="date" value="${esc(plan.end||trip.end)}"></label></div>
+    <label class="f" ${pm?"":"hidden"}><span>가고 싶은 장소 (한 줄에 하나)</span><textarea id="p-places" rows="5" placeholder="해운대 암소갈비집\n광안리 해변\n흰여울문화마을\n감천문화마을">${esc(plan.places)}</textarea></label>
+    <label class="f"><span>원하는 스타일 (선택)</span><input id="p-style" value="${esc(plan.style)}" placeholder="예: 맛집 위주, 걷기 적게, 아이 동반"></label>
+    <p class="hint"><b>1.</b> 요청문을 복사해서 Claude나 ChatGPT에 붙여넣으세요.</p>
+    <div class="airow"><button type="button" class="b pri" id="p-copy">요청문 복사</button><a class="b" href="https://claude.ai/new" target="_blank" rel="noopener">Claude 열기 ↗</a><a class="b" href="https://chatgpt.com/" target="_blank" rel="noopener">ChatGPT 열기 ↗</a></div>
+    <p class="hint"><b>2.</b> AI의 답을 통째로 복사해서 아래에 붙여넣고 적용을 누르세요.</p>
+    <label class="f"><span class="sr-only">AI의 답</span><textarea id="p-ans" rows="3" placeholder="AI의 답을 여기에 붙여넣기">${esc(plan.ans)}</textarea></label>
+    <div class="airow"><button type="button" class="b pri" id="p-apply">일정에 적용</button></div>
+    <p class="aistatus" id="p-status" aria-live="polite"></p></fieldset>`;
+  }
   o += `<fieldset class="ai" id="aibox" hidden><legend>Claude에게 맡기기</legend>
     <p class="hint">여행 정보를 자유롭게 적거나 항공·숙소 예약 메일을 그대로 붙여넣으세요. 비어 있는 일정은 실제 장소로 채워 드려요. 이미 쓴 내용은 그대로 둬요.</p>
     <label class="f"><span class="sr-only">Claude에게 보낼 내용</span><textarea id="aitext" rows="4" placeholder="예: 11월 20일부터 22일까지 부산 2박 3일, 숙소는 해운대 그랜드조선. 맛집 위주, 둘째 날은 기장 쪽.">${esc(aiDraft)}</textarea></label>
@@ -557,19 +574,13 @@ async function setupAI(){
   document.getElementById("aigo").onclick=runAI;
 }
 const AI_ERR={not_granted:"Claude 사용을 허용하지 않아서 채울 수 없어요. 직접 입력해 주세요.",rate_limited:"요청이 많아요. 잠시 후 다시 눌러 주세요.",session_expired:"Claude에 다시 로그인해 주세요.",image_rejected:"사진을 읽을 수 없어요. 다른 사진으로 해 보세요.",invalid_json:"결과를 정리하지 못했어요. 다시 눌러 주세요.",cancelled:"중지했어요.",images_unavailable:"이 화면에서는 사진을 보낼 수 없어요."};
-async function runAI(){
-  const txt=(document.getElementById("aitext")?.value||"").trim();
-  const st=document.getElementById("aistatus");
-  if(!txt && !aiImgs){ st.textContent="무엇을 채울지 먼저 적어 주세요."; return; }
-  const go=document.getElementById("aigo"), stop=document.getElementById("aistop");
-  go.disabled=true; stop.hidden=false; st.textContent="Claude가 일정을 짜는 중이에요… (보통 20초~1분)";
-  aiCtl=new AbortController();
+function buildPrompt(txt, withImgs, forPaste){
   const cur={...trip}; delete cur.id;
-  const prompt =
-`너는 여행 일정 페이지를 채우는 도우미야. '현재 내용'에 '사용자 입력'을 반영해서 완성된 여행 데이터를 JSON 객체 하나로만 답해.
+  return `너는 여행 일정 페이지를 채우는 도우미야. '현재 내용'에 '사용자 입력'을 반영해서 완성된 여행 데이터를 JSON 객체 하나로만 답해.${forPaste?" 다른 설명 없이 ```json 코드블록 하나로만 답해.":""}
 규칙:
 - 사용자가 준 사실(날짜, 편명, 시간, 예약번호, 숙소)은 그대로 써. 주어지지 않은 예약번호·확정번호·전화번호는 지어내지 말고 빈 문자열로 둬.
 - 현재 내용에 이미 적힌 값은 사용자가 바꾸라고 하지 않는 한 그대로 유지해.
+- 사용자가 가고 싶은 장소 목록을 주면 그 장소를 빠짐없이 넣고, 가까운 곳끼리 같은 날로 묶어 이동이 가장 짧은 순서로 배치해. 빈 시간은 근처 식사·카페로 채워.
 - 일정이 비어 있는 날은 실제로 있는 장소로 하루 5~8곳을 시간순으로, 동선이 가깝게 짜. 첫날·마지막 날은 이동 시간을 고려해.
 - region: 한국 안 여행이면 "domestic", 아니면 "abroad".
 - q(지도 검색어): domestic이면 "지역 + 가게/장소 이름"을 한국어로, abroad면 구글맵에서 바로 찾히는 영어 이름 + 동네/도시.
@@ -579,7 +590,7 @@ async function runAI(){
 - check.before / check.bring / check.buy: 항목을 줄바꿈(\\n)으로 구분한 문자열.
 - phrases: abroad면 식당·가게에서 보여줄 현지어 문장 10~14개를 "현지어 | 한국어 뜻" 형식으로 줄바꿈 구분. domestic이면 빈 문자열.
 - weather: 그 시기 평균 날씨 한 줄. alert: 꼭 알아야 할 주의사항 한 문장(없으면 빈 문자열).
-${aiImgs?"- 첨부한 사진은 항공권·숙소 예약 확인 화면이야. 거기서 정보를 읽어 flight와 hotel을 채워.\n":""}
+${withImgs?"- 첨부한 사진은 항공권·숙소 예약 확인 화면이야. 거기서 정보를 읽어 flight와 hotel을 채워.\n":""}
 스키마: {"title":"","region":"domestic|abroad","start":"","end":"","summary":"","alert":"","weather":"","flight":{"airline":"","pnr":"","out":"","back":"","bag":""},"hotel":{"name":"","q":"","checkin":"","checkout":"","conf":"","phone":"","local":""},"days":[{"title":"","stops":[{"t":"","n":"","m":"","q":""}]}],"alts":[{"n":"","m":"","q":""}],"check":{"before":"","bring":"","buy":""},"phrases":""}
 
 현재 내용:
@@ -587,6 +598,15 @@ ${JSON.stringify(cur)}
 
 사용자 입력:
 ${txt||"(사진만 첨부)"}`;
+}
+async function runAI(){
+  const txt=(document.getElementById("aitext")?.value||"").trim();
+  const st=document.getElementById("aistatus");
+  if(!txt && !aiImgs){ st.textContent="무엇을 채울지 먼저 적어 주세요."; return; }
+  const go=document.getElementById("aigo"), stop=document.getElementById("aistop");
+  go.disabled=true; stop.hidden=false; st.textContent="Claude가 일정을 짜는 중이에요… (보통 20초~1분)";
+  aiCtl=new AbortController();
+  const prompt = buildPrompt(txt, !!aiImgs, false);
   try{
     const opts={signal:aiCtl.signal, cache:false};
     if(aiImgs) opts.images=aiImgs;
@@ -605,6 +625,48 @@ ${txt||"(사진만 첨부)"}`;
   }
 }
 
+
+/* ---------- AI 요청문 복사 방식 (공개 사이트) ---------- */
+let plan={mode:"auto",dest:"",start:"",end:"",style:"",places:"",ans:""};
+function planText(){
+  const bits=[];
+  if(plan.dest) bits.push("여행지: "+plan.dest);
+  const a=plan.start||trip.start, b=plan.end||trip.end;
+  if(a) bits.push("날짜: "+a+(b?" ~ "+b:""));
+  if(plan.style) bits.push("원하는 스타일: "+plan.style);
+  if(plan.mode==="mine" && plan.places.trim()) bits.push("가고 싶은 장소(모두 넣어서 동선을 짜 줘):\n"+lines(plan.places).map(x=>"- "+x).join("\n"));
+  else bits.push("일정은 이 지역에서 많이 가는 곳과 맛집으로 알아서 짜 줘.");
+  return bits.join("\n");
+}
+async function copyText(t){
+  try{ await navigator.clipboard.writeText(t); return true; }catch(e){}
+  const ta=document.createElement("textarea"); ta.value=t; ta.style.position="fixed"; ta.style.opacity="0"; document.body.append(ta); ta.select();
+  let ok=false; try{ ok=document.execCommand("copy"); }catch(e){} ta.remove(); return ok;
+}
+$("#formpane").addEventListener("input", e=>{
+  const el=e.target;
+  if(el.name==="pmode"){ plan.mode=el.value; renderForm(); return; }
+  const map={"p-dest":"dest","p-start":"start","p-end":"end","p-style":"style","p-places":"places","p-ans":"ans"};
+  if(map[el.id]) plan[map[el.id]]=el.value;
+});
+$("#formpane").addEventListener("click", async e=>{
+  const st=document.getElementById("p-status");
+  if(e.target.id==="p-copy"){
+    if(!plan.dest && !trip.title){ st.textContent="여행지를 먼저 적어 주세요."; return; }
+    if(plan.mode==="mine" && !plan.places.trim()){ st.textContent="가고 싶은 장소를 한 줄에 하나씩 적어 주세요."; return; }
+    const ok=await copyText(buildPrompt(planText(), false, true));
+    st.textContent = ok ? "복사했어요. Claude나 ChatGPT를 열어 붙여넣고 보내세요." : "복사하지 못했어요. 다른 브라우저로 열어 보세요.";
+  }
+  if(e.target.id==="p-apply"){
+    const raw=plan.ans||"";
+    const i=raw.indexOf("{"), j=raw.lastIndexOf("}");
+    if(i<0||j<=i){ st.textContent="답에서 일정 데이터를 찾지 못했어요. AI의 답을 처음부터 끝까지 복사해서 붙여넣어 주세요."; return; }
+    let r; try{ r=JSON.parse(raw.slice(i,j+1)); }catch(err){ st.textContent="답이 중간에 잘린 것 같아요. AI에게 ‘JSON만 다시 보내 줘’라고 한 뒤 다시 붙여넣어 주세요."; return; }
+    trip=normalize(r, trip.id); syncDays();
+    plan.ans=""; dirty=true; await flushSave(); renderAll();
+    toast("일정을 채웠어요. 완성 페이지에서 확인해 보세요.");
+  }
+});
 /* ---------- 화면 ---------- */
 function renderView(){
   const vp=$("#viewpane");
